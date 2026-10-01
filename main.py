@@ -1,11 +1,12 @@
 import os
 import re
 import json
-import time
-from datetime import datetime
-
 import requests
 import feedparser
+
+from datetime import datetime
+from urllib.parse import urlsplit, urlunsplit
+
 from bs4 import BeautifulSoup
 from google import genai
 from google.genai import types
@@ -24,8 +25,8 @@ GEMINI_KEY = os.getenv("GEMINI_API_KEY")
 
 if not TELEGRAM_TOKEN or not CHAT_ID or not GEMINI_KEY:
     raise ValueError(
-        "Lütfen .env dosyasında TELEGRAM_BOT_TOKEN, "
-        "TELEGRAM_CHAT_ID ve GEMINI_API_KEY tanımlarını kontrol edin."
+        "Lütfen TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID "
+        "ve GEMINI_API_KEY tanımlarını kontrol edin."
     )
 
 
@@ -85,33 +86,28 @@ try:
         )
 
         print(
-            f"📌 Kanal adı : "
-            f"{chat.get('title')}"
+            f"📌 Kanal adı : {chat.get('title')}"
         )
 
         print(
-            f"🆔 Chat ID   : "
-            f"{chat.get('id')}"
+            f"🆔 Chat ID   : {chat.get('id')}"
         )
 
         print(
-            f"📂 Chat tipi : "
-            f"{chat.get('type')}"
+            f"📂 Chat tipi : {chat.get('type')}"
         )
 
         if chat.get("type") == "channel":
 
             print(
-                "✅ CHAT_ID gerçekten "
-                "bir Telegram KANALI."
+                "✅ CHAT_ID gerçekten bir Telegram KANALI."
             )
 
         else:
 
             print(
                 f"⚠️ UYARI: CHAT_ID bir kanal değil. "
-                f"Telegram tipi: "
-                f"{chat.get('type')}"
+                f"Telegram tipi: {chat.get('type')}"
             )
 
         if "linked_chat_id" in chat:
@@ -133,9 +129,7 @@ try:
             "❌ Telegram getChat başarısız."
         )
 
-        print(
-            chat_data
-        )
+        print(chat_data)
 
 except Exception as e:
 
@@ -150,7 +144,6 @@ except Exception as e:
 
 RSS_SOURCES = [
 
-    # Özel Video & Sıcak Olaylar
     {
         "name": "NTV Video",
         "cat": "Gündem",
@@ -226,8 +219,12 @@ RSS_SOURCES = [
 HISTORY_FILE = "posted_links.txt"
 
 history_dir = os.path.dirname(HISTORY_FILE)
+
 if history_dir:
-    os.makedirs(history_dir, exist_ok=True)
+    os.makedirs(
+        history_dir,
+        exist_ok=True
+    )
 
 
 # =========================================================
@@ -236,12 +233,6 @@ if history_dir:
 
 START_HOUR = 8
 END_HOUR = 23
-
-CHECK_INTERVAL_SECONDS = 30
-
-POST_COOLDOWN_SECONDS = 300
-
-last_post_time = 0
 
 
 # =========================================================
@@ -252,18 +243,46 @@ def is_active_hours():
 
     now = datetime.now()
 
-    if (
-        now.hour < START_HOUR
-        or (
-            now.hour == END_HOUR
-            and now.minute > 30
-        )
-        or now.hour > END_HOUR
-    ):
+    if now.hour < START_HOUR:
+        return False
 
+    if now.hour == END_HOUR and now.minute > 30:
+        return False
+
+    if now.hour > END_HOUR:
         return False
 
     return True
+
+
+# =========================================================
+# LİNK NORMALİZASYONU
+# =========================================================
+
+def normalize_link(link):
+
+    if not link:
+        return ""
+
+    try:
+
+        parts = urlsplit(
+            link.strip()
+        )
+
+        return urlunsplit(
+            (
+                parts.scheme.lower(),
+                parts.netloc.lower(),
+                parts.path.rstrip("/"),
+                parts.query,
+                ""
+            )
+        )
+
+    except Exception:
+
+        return link.strip()
 
 
 # =========================================================
@@ -278,20 +297,37 @@ def get_posted_links():
 
         return set()
 
-    with open(
-        HISTORY_FILE,
-        "r",
-        encoding="utf-8"
-    ) as f:
+    try:
 
-        return set(
-            line.strip()
-            for line in f
-            if line.strip()
+        with open(
+            HISTORY_FILE,
+            "r",
+            encoding="utf-8"
+        ) as f:
+
+            return {
+                normalize_link(line)
+                for line in f
+                if line.strip()
+            }
+
+    except Exception as e:
+
+        print(
+            f"⚠️ Haber geçmişi okunamadı: {e}"
         )
+
+        return set()
 
 
 def save_posted_link(link):
+
+    normalized = normalize_link(
+        link
+    )
+
+    if not normalized:
+        return
 
     with open(
         HISTORY_FILE,
@@ -300,50 +336,7 @@ def save_posted_link(link):
     ) as f:
 
         f.write(
-            link + "\n"
-        )
-
-
-# =========================================================
-# KUYRUK
-# =========================================================
-
-def load_queue():
-
-    if not os.path.exists(
-        QUEUE_FILE
-    ):
-
-        return []
-
-    try:
-
-        with open(
-            QUEUE_FILE,
-            "r",
-            encoding="utf-8"
-        ) as f:
-
-            return json.load(f)
-
-    except Exception:
-
-        return []
-
-
-def save_queue(queue):
-
-    with open(
-        QUEUE_FILE,
-        "w",
-        encoding="utf-8"
-    ) as f:
-
-        json.dump(
-            queue,
-            f,
-            ensure_ascii=False,
-            indent=2
+            normalized + "\n"
         )
 
 
@@ -352,11 +345,6 @@ def save_queue(queue):
 # =========================================================
 
 def fetch_media_from_url(page_url):
-
-    """
-    Sayfa içine girip doğrudan MP4 video veya
-    görsel bağlantısı arar.
-    """
 
     try:
 
@@ -375,7 +363,6 @@ def fetch_media_from_url(page_url):
         )
 
         if resp.status_code != 200:
-
             return None, None
 
         html = resp.text
@@ -440,9 +427,7 @@ def fetch_media_from_url(page_url):
                 og_v.get("content")
             ):
 
-                v_content = og_v[
-                    "content"
-                ]
+                v_content = og_v["content"]
 
                 if ".mp4" in v_content.lower():
 
@@ -455,13 +440,9 @@ def fetch_media_from_url(page_url):
         # 3. VIDEO / SOURCE
         # -------------------------------------------------
 
-        for v in soup.find_all(
-            "video"
-        ):
+        for v in soup.find_all("video"):
 
-            src = v.get(
-                "src"
-            )
+            src = v.get("src")
 
             if (
                 src
@@ -474,13 +455,9 @@ def fetch_media_from_url(page_url):
                     src
                 )
 
-            for s in v.find_all(
-                "source"
-            ):
+            for s in v.find_all("source"):
 
-                s_src = s.get(
-                    "src"
-                )
+                s_src = s.get("src")
 
                 if (
                     s_src
@@ -554,22 +531,20 @@ def fetch_media_from_url(page_url):
                 og_img.get("content")
             ):
 
-                img_url = og_img[
-                    "content"
-                ]
+                img_url = og_img["content"]
 
-                if img_url.startswith(
-                    "http"
-                ):
+                if img_url.startswith("http"):
 
                     return (
                         "photo",
                         img_url
                     )
 
-    except Exception:
+    except Exception as e:
 
-        pass
+        print(
+            f"⚠️ Medya alınamadı: {e}"
+        )
 
     return None, None
 
@@ -580,7 +555,9 @@ def fetch_media_from_url(page_url):
 
 def extract_media(entry):
 
+    # -----------------------------------------------------
     # 1. RSS ENCLOSURES
+    # -----------------------------------------------------
 
     if (
         hasattr(
@@ -604,9 +581,7 @@ def extract_media(entry):
             )
 
             if (
-                mime.startswith(
-                    "video/"
-                )
+                mime.startswith("video/")
                 or
                 ".mp4" in href.lower()
             ):
@@ -617,14 +592,10 @@ def extract_media(entry):
                 )
 
             if (
-                mime.startswith(
-                    "image/"
-                )
+                mime.startswith("image/")
                 or
                 any(
-                    href.lower().endswith(
-                        ext
-                    )
+                    href.lower().endswith(ext)
                     for ext in [
                         ".jpg",
                         ".jpeg",
@@ -639,7 +610,9 @@ def extract_media(entry):
                     href
                 )
 
+    # -----------------------------------------------------
     # 2. SAYFADAN MEDYA
+    # -----------------------------------------------------
 
     m_type, m_url = fetch_media_from_url(
         entry.link
@@ -652,7 +625,9 @@ def extract_media(entry):
             m_url
         )
 
+    # -----------------------------------------------------
     # 3. FALLBACK
+    # -----------------------------------------------------
 
     content = (
         getattr(
@@ -733,12 +708,12 @@ Haber Detayı:
         "gemini-flash-latest"
     ]
 
-    for m in models:
+    for model_name in models:
 
         try:
 
             res = ai_client.models.generate_content(
-                model=m,
+                model=model_name,
                 contents=prompt,
                 config=types.GenerateContentConfig(
                     temperature=0.3
@@ -786,13 +761,20 @@ Haber Detayı:
 
                 text = text.strip()
 
-            if "REDDET" in text:
+            if not text:
+                continue
+
+            if "REDDET" in text.upper():
 
                 return None
 
             return text
 
-        except Exception:
+        except Exception as e:
+
+            print(
+                f"⚠️ Gemini {model_name} hatası: {e}"
+            )
 
             continue
 
@@ -806,8 +788,7 @@ Haber Detayı:
 def send_telegram(
     text,
     media_type=None,
-    media_url=None,
-    original_link=""
+    media_url=None
 ):
 
     # -----------------------------------------------------
@@ -821,8 +802,7 @@ def send_telegram(
     ):
 
         print(
-            f"🎬 Video doğrudan Telegram'a "
-            f"gönderiliyor: "
+            f"🎬 Video Telegram'a gönderiliyor: "
             f"{media_url[:80]}..."
         )
 
@@ -856,8 +836,7 @@ def send_telegram(
             ):
 
                 print(
-                    "🎬 [BAŞARILI] Video doğrudan "
-                    "Telegram'a gönderildi!"
+                    "🎬 [BAŞARILI] Video gönderildi!"
                 )
 
                 return True
@@ -884,8 +863,7 @@ def send_telegram(
     ):
 
         print(
-            f"🖼 Fotoğraf Telegram'a "
-            f"gönderiliyor: "
+            f"🖼 Fotoğraf Telegram'a gönderiliyor: "
             f"{media_url[:80]}..."
         )
 
@@ -991,45 +969,63 @@ def send_telegram(
 
 
 # =========================================================
-# RSS HABERLERİNİ KUYRUĞA EKLE
+# YENİ HABER BUL
 # =========================================================
 
-def fetch_and_enqueue():
+def fetch_next_news():
 
     posted_links = get_posted_links()
 
-    queue = load_queue()
-
-    queued_links = {
-        item["link"]
-        for item in queue
-    }
+    candidates = []
 
     for source in RSS_SOURCES:
 
         try:
+
+            print(
+                f"🔎 RSS kontrol ediliyor: "
+                f"{source['name']}"
+            )
 
             feed = feedparser.parse(
                 source["url"]
             )
 
             if not feed.entries:
-
                 continue
 
-            for entry in feed.entries[:3]:
+            for entry in feed.entries[:10]:
 
-                link = entry.link
+                link = getattr(
+                    entry,
+                    "link",
+                    ""
+                ).strip()
 
-                if (
-                    link in posted_links
-                    or
-                    link in queued_links
-                ):
+                if not link:
+                    continue
+
+                normalized_link = normalize_link(
+                    link
+                )
+
+                if normalized_link in posted_links:
+
+                    print(
+                        f"⏭️ Daha önce gönderilmiş: "
+                        f"{link}"
+                    )
 
                     continue
 
-                title = entry.title
+                title = getattr(
+                    entry,
+                    "title",
+                    ""
+                ).strip()
+
+                if not title:
+                    continue
 
                 summary = getattr(
                     entry,
@@ -1041,57 +1037,79 @@ def fetch_and_enqueue():
                     entry
                 )
 
-                queue.append(
+                # -----------------------------------------
+                # HABER TARİHİ
+                # -----------------------------------------
+
+                published = getattr(
+                    entry,
+                    "published_parsed",
+                    None
+                )
+
+                if published:
+
+                    try:
+
+                        timestamp = (
+                            datetime(
+                                *published[:6]
+                            ).timestamp()
+                        )
+
+                    except Exception:
+
+                        timestamp = 0
+
+                else:
+
+                    timestamp = 0
+
+                candidates.append(
                     {
                         "title": title,
                         "summary": summary,
-                        "link": link,
+                        "link": normalized_link,
                         "source": source["name"],
                         "category": source["cat"],
                         "media_type": media_type,
                         "media_url": media_url,
-                        "created_at": time.time()
+                        "timestamp": timestamp
                     }
                 )
 
-                queued_links.add(
-                    link
-                )
+        except Exception as e:
 
-                media_tag = (
-                    "🎬 VIDEO"
-                    if media_type == "video"
-                    else
-                    (
-                        "🖼 GÖRSEL"
-                        if media_url
-                        else
-                        "📝 METİN"
-                    )
-                )
+            print(
+                f"⚠️ {source['name']} RSS hatası: "
+                f"{e}"
+            )
 
-                print(
-                    f"📥 [{source['cat']} | "
-                    f"{media_tag}] Kuyruğa alındı: "
-                    f"{title[:40]}..."
-                )
+    if not candidates:
 
-        except Exception:
+        print(
+            "📭 Yeni haber bulunamadı."
+        )
 
-            pass
+        return []
 
-    save_queue(
-        queue
+    candidates.sort(
+        key=lambda item: item["timestamp"],
+        reverse=True
     )
 
+    print(
+        f"📰 {len(candidates)} yeni haber bulundu."
+    )
+
+    return candidates
+
 
 # =========================================================
-# KUYRUK İŞLEME
+# TEK HABER İŞLE
 # =========================================================
 
-def process_queue():
-
-    global last_post_time
+def process_one_news():
 
     if not is_active_hours():
 
@@ -1100,61 +1118,22 @@ def process_queue():
         )
 
         print(
-            f"[{now_str}] "
-            f"🌙 Gece modu devrede. "
+            f"[{now_str}] 🌙 Gece modu devrede. "
             f"Gönderim yapılmıyor."
         )
 
         return
 
-    # -----------------------------------------------------
-    # COOLDOWN
-    # -----------------------------------------------------
+    candidates = fetch_next_news()
 
-    if last_post_time > 0:
-
-        elapsed = (
-            time.time()
-            -
-            last_post_time
-        )
-
-        if (
-            elapsed
-            <
-            POST_COOLDOWN_SECONDS
-        ):
-
-            remaining = int(
-                POST_COOLDOWN_SECONDS
-                -
-                elapsed
-            )
-
-            print(
-                f"⏳ Sonraki haber için "
-                f"{remaining // 60} dk "
-                f"{remaining % 60} sn "
-                f"bekleniyor..."
-            )
-
-            return
-
-    queue = load_queue()
-
-    if not queue:
-
+    if not candidates:
         return
 
-    while queue:
+    # -----------------------------------------------------
+    # EN YENİ HABERDEN BAŞLA
+    # -----------------------------------------------------
 
-        item = queue.pop(
-            0
-        )
-
-        save_queue(
-            queue
-        )
+    for item in candidates:
 
         print(
             f"\n⚙️ İşleniyor "
@@ -1172,51 +1151,46 @@ def process_queue():
 
             print(
                 "🗑️ Haber Gemini tarafından "
-                "elendi. Sıradakine geçiliyor..."
+                "reddedildi."
             )
 
+            # Reddedilen haberi geçmişe ekle.
+            # Böylece her 5 dakikada tekrar denenmez.
             save_posted_link(
                 item["link"]
             )
 
             continue
 
-        if send_telegram(
+        success = send_telegram(
             post_text,
-            item.get(
-                "media_type"
-            ),
-            item.get(
-                "media_url"
-            ),
-            item["link"]
-        ):
+            item.get("media_type"),
+            item.get("media_url")
+        )
+
+        if success:
 
             print(
-                "🚀 [BAŞARILI] "
-                "Haber kanala fırlatıldı!"
+                "🚀 [BAŞARILI] Haber kanala gönderildi!"
             )
 
             save_posted_link(
                 item["link"]
             )
 
-            last_post_time = time.time()
+            return
 
-            break
+        print(
+            "❌ Telegram gönderimi başarısız."
+        )
 
-        else:
+        # Gönderim başarısızsa geçmişe eklemiyoruz.
+        # Bir sonraki çalışmada tekrar denenebilir.
 
-            print(
-                "❌ Telegram gönderim hatası, "
-                "atlanıyor."
-            )
-
-            save_posted_link(
-                item["link"]
-            )
-
-            break
+    print(
+        "📭 Bu çalışmada gönderilebilecek "
+        "uygun haber bulunamadı."
+    )
 
 
 # =========================================================
@@ -1226,7 +1200,7 @@ def process_queue():
 if __name__ == "__main__":
 
     print(
-        "🏭 Telegram Haber Botu başlatıldı."
+        "\n🏭 Telegram Haber Botu başlatıldı."
     )
 
     print(
@@ -1237,17 +1211,18 @@ if __name__ == "__main__":
 
     try:
 
-        fetch_and_enqueue()
-
-        process_queue()
+        process_one_news()
 
         print(
-            "✅ Bu çalışma tamamlandı. "
-            "Python kapanıyor."
+            "\n✅ Bu çalışma tamamlandı."
+        )
+
+        print(
+            "🔚 Python kapanıyor."
         )
 
     except Exception as e:
 
         print(
-            f"❌ Çalışma hatası: {e}"
+            f"\n❌ Çalışma hatası: {e}"
         )
