@@ -225,8 +225,6 @@ RSS_SOURCES = [
 
 HISTORY_FILE = "posted_links.txt"
 
-QUEUE_FILE = "news_queue.json"
-
 history_dir = os.path.dirname(HISTORY_FILE)
 if history_dir:
     os.makedirs(history_dir, exist_ok=True)
